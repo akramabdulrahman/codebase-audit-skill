@@ -1,0 +1,1 @@
+{ "name":"mini-mern-server","dependencies":{"express":"^4","mongoose":"^8"} }

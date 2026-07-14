@@ -1,0 +1,35 @@
+{
+ "candidates": [
+  {
+   "auth": "roles",
+   "controller": "widget/deleteWidget.js",
+   "method": "DELETE",
+   "note": "siblings enforce Widget.org == req.user.org \u2014 this handler does not",
+   "path": "/api/widgets/:id",
+   "predicate": "Widget.org == req.user.org",
+   "prov": [
+    {
+     "detail": "orgAdmin reaches DELETE /api/widgets/:id (auth=roles)",
+     "loc": "controllers/widget/index.js:10",
+     "step": "reachable route"
+    },
+    {
+     "detail": "Widget.findByIdAndDelete \u2014 widget/deleteWidget.js applies no ownership check",
+     "loc": "database/queries/widget.js:4",
+     "step": "mutates, no guard"
+    },
+    {
+     "detail": "widget/updateWidget.js checks Widget.org == req.user.org \u2014 the predicate this handler omits",
+     "loc": "controllers/widget/updateWidget.js:5",
+     "step": "sibling enforces"
+    }
+   ],
+   "tier": "HIGH"
+  }
+ ],
+ "counts": {
+  "HIGH": 1,
+  "MEDIUM": 0,
+  "REVIEW": 0
+ }
+}

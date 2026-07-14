@@ -1,0 +1,176 @@
+{
+ "componentThunks": [
+  {
+   "component": "MyAccount",
+   "file": "src/components/MyAccount.jsx",
+   "thunks": [
+    "updateMe"
+   ]
+  },
+  {
+   "component": "WidgetEdit",
+   "file": "src/components/WidgetEdit.jsx",
+   "thunks": [
+    "updateWidget",
+    "deleteWidget"
+   ]
+  }
+ ],
+ "frontendActors": [
+  {
+   "backendCalls": [
+    {
+     "loc": "src/actions/widgetActions.js:4",
+     "method": "PATCH",
+     "thunk": "updateWidget",
+     "url": "/api/widgets/:x"
+    },
+    {
+     "loc": "src/actions/widgetActions.js:8",
+     "method": "DELETE",
+     "thunk": "deleteWidget",
+     "url": "/api/widgets/:x"
+    }
+   ],
+   "component": "WidgetEdit",
+   "componentFile": "src/components/WidgetEdit.jsx",
+   "flags": [],
+   "loc": "src/components/App.jsx:7",
+   "path": "/widgets/:id/edit",
+   "roles": [
+    "admin",
+    "orgAdmin"
+   ],
+   "thunks": [
+    "updateWidget",
+    "deleteWidget"
+   ]
+  },
+  {
+   "backendCalls": [
+    {
+     "loc": "src/actions/userActions.js:4",
+     "method": "PATCH",
+     "thunk": "updateMe",
+     "url": "/api/me"
+    }
+   ],
+   "component": "MyAccount",
+   "componentFile": "src/components/MyAccount.jsx",
+   "flags": [],
+   "loc": "src/components/App.jsx:8",
+   "path": "/me",
+   "roles": [
+    "admin",
+    "orgAdmin",
+    "member"
+   ],
+   "thunks": [
+    "updateMe"
+   ]
+  }
+ ],
+ "imports": {
+  "src/actions/userActions.js": {
+   "ME_UPDATED": "src/constants/actionTypes.js"
+  },
+  "src/actions/widgetActions.js": {
+   "WIDGET_UPDATED": "src/constants/actionTypes.js"
+  },
+  "src/components/App.jsx": {
+   "MyAccount": "src/components/MyAccount.jsx",
+   "PrivateRoute": "src/components/PrivateRoute.jsx",
+   "R": "src/constants/navigationRoutes.js",
+   "WidgetEdit": "src/components/WidgetEdit.jsx"
+  },
+  "src/components/MyAccount.jsx": {
+   "updateMe": "src/actions/userActions.js"
+  },
+  "src/components/PrivateRoute.jsx": {},
+  "src/components/WidgetEdit.jsx": {
+   "deleteWidget": "src/actions/widgetActions.js",
+   "updateWidget": "src/actions/widgetActions.js"
+  },
+  "src/constants/actionTypes.js": {},
+  "src/constants/navigationRoutes.js": {},
+  "src/reducers/index.js": {
+   "user": "src/reducers/userReducer.js",
+   "widget": "src/reducers/widgetReducer.js"
+  },
+  "src/reducers/userReducer.js": {
+   "ME_UPDATED": "src/constants/actionTypes.js"
+  },
+  "src/reducers/widgetReducer.js": {
+   "WIDGET_UPDATED": "src/constants/actionTypes.js"
+  }
+ },
+ "routes": [
+  {
+   "component": "WidgetEdit",
+   "componentFile": "src/components/WidgetEdit.jsx",
+   "flags": [],
+   "loc": "src/components/App.jsx:7",
+   "path": "/widgets/:id/edit",
+   "roles": [
+    "admin",
+    "orgAdmin"
+   ]
+  },
+  {
+   "component": "MyAccount",
+   "componentFile": "src/components/MyAccount.jsx",
+   "flags": [],
+   "loc": "src/components/App.jsx:8",
+   "path": "/me",
+   "roles": [
+    "admin",
+    "orgAdmin",
+    "member"
+   ]
+  }
+ ],
+ "stats": {
+  "actorsWithCalls": 2,
+  "componentThunkBindings": 2,
+  "files": 11,
+  "routes": 2,
+  "routesWithComponent": 2,
+  "thunkCalls": 3,
+  "thunks": 3
+ },
+ "thunks": [
+  {
+   "calls": [
+    {
+     "line": 4,
+     "method": "PATCH",
+     "url": "/api/me"
+    }
+   ],
+   "file": "src/actions/userActions.js",
+   "name": "updateMe"
+  },
+  {
+   "calls": [
+    {
+     "line": 4,
+     "method": "PATCH",
+     "url": "/api/widgets/:x"
+    }
+   ],
+   "file": "src/actions/widgetActions.js",
+   "name": "updateWidget"
+  },
+  {
+   "calls": [
+    {
+     "line": 8,
+     "method": "DELETE",
+     "url": "/api/widgets/:x"
+    }
+   ],
+   "file": "src/actions/widgetActions.js",
+   "name": "deleteWidget"
+  }
+ ]
+}

@@ -1,0 +1,1 @@
+{ "name":"mini-mern-client","dependencies":{"react":"^18","react-redux":"^8","redux":"^4","redux-thunk":"^2","react-router":"^6","axios":"^1"} }

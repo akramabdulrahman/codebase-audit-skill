@@ -1,0 +1,2 @@
+{ "target":{"backend":"server","frontend":"client"},
+  "knobs":{ "tenant_attrs":["org","_id"], "scoped_roles":{"orgAdmin":"org"} } }

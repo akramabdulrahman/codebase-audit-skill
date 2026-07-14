@@ -1,0 +1,28 @@
+id: <stack-id>                 # e.g. python-django, ruby-rails, node-sql-orm, go-gin
+detect: { orm: <orm>, framework: <framework>, manifest: <manifest-file> }
+# Copy this file to stacks/<stack-id>.yaml and fill the 5 phases. Project-specific values
+# (script names, ports, URIs) come from .audit/project-profile.json; here declare the generic HOW.
+
+install:
+  steps: ["<how to install deps for this stack>"]
+  capture_audit:
+    command: "<vuln scanner>"     # npm audit | pip-audit -f json | bundle audit | govulncheck ./... | cargo audit
+    output: ".audit/live/deps-warnings.<ext>"
+    note: "Capture warnings as a first-class output. Do not auto-fix. Triage reachability in Stage 3."
+
+db_setup:
+  discover: ["<compose/setup-script/env-file patterns for this stack>"]
+  bring_up: ["<start db>", "<run setup/seed/migrate>"]
+  SAFETY_GATE: "Confirm the TEST db != dev/prod before any reset. STOP if unsure."
+
+run:
+  discover: "<how to find the run command>"
+  ports: "<default ports>"
+  health_check: "<how to confirm it's up>"
+
+test:
+  find_live_runner: "Cross-ref CI with declared test commands, then RUN to find the LIVE one."
+  levels: { unit_integration: "<runner>", e2e: "<runner>" }
+  fixtures: "<how to build one authed actor per role + a 2nd owner for cross-owner tests>"
+
+teardown: ["<stop app>", "<stop/remove db>"]

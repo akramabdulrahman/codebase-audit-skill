@@ -1,0 +1,28 @@
+id: web-react-redux
+detect: { framework: react, state: redux, router: react-router, manifest: package.json }
+# Frontend static-extraction stack. A project pairs ONE backend stack (e.g. node-express-mongoose)
+# with ONE frontend stack (this). Runtime lifecycle for the SPA (vite dev/build) lives with the
+# backend profile's run/test sections; this file declares only the facet extraction.
+
+# ---- STATIC EXTRACTION (facet -> probe -> knobs) ----
+extract:
+  target_subdir: client            # where the SPA lives in the repo
+  facets:
+    ui_routes:  { probe: probes/client-flows.js }   # emits ui_routes + ui_actions together
+    ui_actions: { probe: probes/client-flows.js }
+    ui_state:   { probe: probes/redux-state.js }
+  knobs:                           # classic-Redux-thunk + axios + react-router values (override for RTK/React-Query)
+    app_entry: "src/components/App.jsx"
+    http_clients: ["axios", "api", "http"]
+    action_dirs: ["src/actions"]
+    route_guard_component: "PrivateRoute"
+    roles_prop: "allowedRoles"
+    component_prop: "Component"
+    bind_fn: "connect"
+    reducer_dir: "src/reducers"
+
+# Swap notes (same ui_* facet shapes):
+#   RTK Query   -> a probe reading createApi({endpoints}) (declarative; no thunk axios parse).
+#   React-Query -> useQuery/useMutation with the fetch/axios call in queryFn.
+#   Next.js     -> file-based routes (filesystem) replace the App.jsx route table.
+#   Vue+Pinia   -> defineStore actions replace thunks; <router-view> guards replace PrivateRoute.

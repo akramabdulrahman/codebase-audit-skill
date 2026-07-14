@@ -1,0 +1,22 @@
+# ACTOR-MODEL INTERSECTION — backend(enforced) ∩ client(exposed)
+
+backend routes: 5  |  client routes with calls: 3  |  classes: {'BACKEND-ONLY': 2, 'AGREEMENT': 3}
+
+## CLIENT-SIDE-ONLY-AUTHZ (0) — server = any-authenticated, UI restricts to roles → role gate is CLIENT-ONLY = direct-API bypass. Highest signal.
+
+## FRONTEND-BROADER (0) — UI exposes to roles the server rejects → dead UI or client/server drift.
+
+## BACKEND-BROADER (0) — server allows roles no UI reaches → over-granted or non-UI consumer.
+
+## BACKEND-ONLY (2) — no UI page reaches it → API-only (craft-a-request) surface.
+  GET    /api/widgets/:id                             [public]  backend=—  frontend=—  pages=[]
+  POST   /api/login                                   [open]  backend=—  frontend=—  pages=[]
+
+## AGREEMENT (3) — backend roles == frontend roles → intended, corroborated surface.
+  DELETE /api/widgets/:id                             roles=['admin', 'orgAdmin']
+  PATCH  /api/me                                      roles=[]
+  PATCH  /api/widgets/:id                             roles=['admin', 'orgAdmin']
+
+Caveats: client roles come from connect()-bound thunks in the page file (child-component dispatches & 4 useDispatch
+sites not yet followed); backend paths are static mount-tree joins. CLIENT-SIDE-ONLY-AUTHZ on a MUTATION acting on
+an :id is the IDOR/bypass shortlist — verify each against the handler + a live cross-role request.

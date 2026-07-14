@@ -1,0 +1,41 @@
+{
+ "slices": {
+  "user": "user",
+  "widget": "widget"
+ },
+ "stats": {
+  "actionTypes": 2,
+  "slices": 2,
+  "thunksWithTypes": 3
+ },
+ "thunkSlices": {
+  "deleteWidget": [
+   "widget"
+  ],
+  "updateMe": [
+   "user"
+  ],
+  "updateWidget": [
+   "widget"
+  ]
+ },
+ "thunkTypes": {
+  "deleteWidget": [
+   "WIDGET_UPDATED"
+  ],
+  "updateMe": [
+   "ME_UPDATED"
+  ],
+  "updateWidget": [
+   "WIDGET_UPDATED"
+  ]
+ },
+ "typeSlice": {
+  "ME_UPDATED": [
+   "user"
+  ],
+  "WIDGET_UPDATED": [
+   "widget"
+  ]
+ }
+}

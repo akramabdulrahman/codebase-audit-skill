@@ -1,0 +1,74 @@
+[
+ {
+  "aliases": [],
+  "comparedFields": [],
+  "destructured": [],
+  "file": "controllers/users/login.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": false,
+  "hasSink": false,
+  "selfId": false,
+  "sinkLoc": null
+ },
+ {
+  "aliases": [],
+  "comparedFields": [],
+  "destructured": [],
+  "file": "controllers/users/updateSelf.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": false,
+  "hasSink": false,
+  "selfId": true,
+  "sinkLoc": null
+ },
+ {
+  "aliases": [],
+  "comparedFields": [],
+  "destructured": [],
+  "file": "controllers/widget/deleteWidget.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": false,
+  "hasSink": false,
+  "selfId": false,
+  "sinkLoc": null
+ },
+ {
+  "aliases": [],
+  "comparedFields": [],
+  "destructured": [],
+  "file": "controllers/widget/getWidget.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": false,
+  "hasSink": false,
+  "selfId": false,
+  "sinkLoc": null
+ },
+ {
+  "aliases": [],
+  "comparedFields": [],
+  "destructured": [],
+  "file": "controllers/widget/index.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": false,
+  "hasSink": false,
+  "selfId": false,
+  "sinkLoc": null
+ },
+ {
+  "aliases": [],
+  "comparedFields": [
+   {
+    "attr": "org",
+    "field": "org",
+    "loc": "controllers/widget/updateWidget.js:5"
+   }
+  ],
+  "destructured": [],
+  "file": "controllers/widget/updateWidget.js",
+  "guardRoles": null,
+  "hasOwnershipGuard": true,
+  "hasSink": false,
+  "selfId": false,
+  "sinkLoc": null
+ }
+]

@@ -1,0 +1,84 @@
+# CAPABILITY REGISTRY — the map of static-extraction probes we ship.
+# Each probe emits ONE facet (see reference/facets.md) for one stack family. Downstream analyzers
+# (analyzers below) consume only normalized facets and are stack-agnostic. To support a new stack,
+# add probes here that emit the same facets — analyzers never change.
+#
+# The orchestrator/LLM reads this to answer: "for THIS project's detected stack, which probes give me
+# which facet, with what config?" Config knobs are passed to a probe via the AUDIT_CONFIG env (a merged
+# JSON built from the project's stack profile); every knob has a built-in default so probes run bare too.
+
+analyzers:            # stack-agnostic — operate purely on facets, never edited to add a stack
+  - { id: intersect,    file: probes/intersect.py,   consumes: [server_routes, ui_routes, ui_actions],           emits: "authz conflict/truth classes (CLIENT-SIDE-ONLY-AUTHZ, FRONTEND-BROADER, BACKEND-ONLY, AGREEMENT)" }
+  - { id: actor-model,  file: probes/actor-model.py,  consumes: [server_routes, enforcement, entities, ui_actions], emits: "IDOR candidates w/ sibling-asymmetry predicate" }
+  - { id: role-paths,   file: probes/role-paths.py,   consumes: [server_routes, ui_routes, ui_actions, db_ops, ui_state], emits: "per-role full-stack functional-requirement paths (action=>db=>back)" }
+
+probes:
+  # ---------- BACKEND facets ----------
+  - id: server-routes
+    file: probes/backend-actors.js
+    facet: server_routes
+    stack_family: node-express            # framework = express-style router
+    knobs:
+      router_entry:        { default: "router/index.js",  doc: "router file to start the mount-tree walk" }
+      api_prefix:          { default: "/api",             doc: "app.use('<prefix>', router) mount prefix" }
+      auth_fn:             { default: "authentication",   doc: "name of the authz middleware call" }
+      roles_key:           { default: "allowedRoles",     doc: "object key holding the role array" }
+      public_key:          { default: "allowPublic",      doc: "object key => public route" }
+      special_flags:       { default: ["decideRoleFlow"], doc: "auth-option keys with bespoke semantics" }
+      role_consts_module:  { default: "constants",        doc: "module exporting role-set constants" }
+    swap_for_stack: "NestJS => a probe reading @Controller/@Roles decorators; Rails => routes.rb + before_action; Django => urls.py + permission_classes. Same server_routes shape."
+
+  - id: entities
+    file: probes/mongoose-schema.js
+    facet: entities
+    stack_family: mongoose
+    knobs:
+      model_dir: { default: "database/models", doc: "dir of ORM model definitions" }
+    swap_for_stack: "Prisma => parse schema.prisma; Sequelize/TypeORM => model decorators; SQL => information_schema. Same entities+owner_links shape."
+
+  - id: enforcement
+    file: probes/guards.js
+    facet: enforcement
+    stack_family: node-express
+    knobs:
+      controller_dir: { default: "controllers", doc: "dir of request handlers" }
+      user_root:      { default: "req.user",     doc: "expression that holds the caller identity" }
+      tenant_attrs:   { default: ["tpOrganisation","employerOrganisation","programmesCanDeliver","_id","userId","credentialId"], doc: "caller tenant/ownership attributes to track" }
+      forbid_pattern: { default: "forbidden|unauthorized|badData|Access denied", doc: "regex marking a deny branch" }
+
+  - id: db-ops
+    file: probes/db-layer.js
+    facet: db_ops
+    stack_family: mongoose
+    knobs:
+      controller_dir: { default: "controllers",       doc: "request-handler dir" }
+      query_dirs:     { default: ["database/queries"], doc: "wrapper layer between handler and ORM (empty => handler calls ORM directly)" }
+      model_dir:      { default: "database/models",    doc: "ORM model dir (to recognize model identifiers)" }
+
+  # ---------- FRONTEND facets ----------
+  - id: ui-flows
+    file: probes/client-flows.js
+    facet: [ui_routes, ui_actions]
+    stack_family: react-redux
+    knobs:
+      app_entry:              { default: "src/components/App.jsx", doc: "file holding the route table" }
+      http_clients:           { default: ["axios","api","http"],   doc: "identifiers whose .get/.post(...) is an API call" }
+      action_dirs:            { default: ["src/actions"],          doc: "thunk/action-creator dirs (API-call layer)" }
+      route_guard_component:  { default: "PrivateRoute",           doc: "JSX component that carries the route's roles" }
+      roles_prop:             { default: "allowedRoles",           doc: "prop holding the role array" }
+      component_prop:         { default: "Component",              doc: "prop naming the rendered page component" }
+      bind_fn:                { default: "connect",                doc: "component<->action binding HOC (react-redux)" }
+    swap_for_stack: "RTK Query => read createApi endpoints (declarative, no thunk parse); React-Query => useQuery/useMutation keys; Vue/Pinia => actions. Same ui_routes+ui_actions shape."
+
+  - id: ui-state
+    file: probes/redux-state.js
+    facet: ui_state
+    stack_family: react-redux
+    knobs:
+      reducer_dir:   { default: "src/reducers", doc: "reducer dir (combineReducers + switch cases)" }
+      action_dirs:   { default: ["src/actions"], doc: "thunk dirs (to map thunk -> dispatched types)" }
+    swap_for_stack: "RTK createSlice => slice.name + reducers keys (declarative). Same ui_state shape."
+
+# A concrete project selects ONE backend stack_family + ONE frontend stack_family (see stacks/<id>.yaml
+# `extract:` blocks). Detection: probes/detect.py sniffs deps + file patterns -> picks the profiles ->
+# merges knobs -> .audit/stack.json (the AUDIT_CONFIG the probes read).

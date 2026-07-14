@@ -1,0 +1,102 @@
+{
+ "controllers": {
+  "controllers/users/updateSelf.js": {
+   "calls": [
+    "updateUserById"
+   ],
+   "models": [
+    {
+     "loc": "database/queries/user.js:2",
+     "model": "User",
+     "op": "findByIdAndUpdate",
+     "write": true
+    }
+   ]
+  },
+  "controllers/widget/deleteWidget.js": {
+   "calls": [
+    "deleteWidgetById"
+   ],
+   "models": [
+    {
+     "loc": "database/queries/widget.js:4",
+     "model": "Widget",
+     "op": "findByIdAndDelete",
+     "write": true
+    }
+   ]
+  },
+  "controllers/widget/getWidget.js": {
+   "calls": [
+    "getWidgetById"
+   ],
+   "models": [
+    {
+     "loc": "database/queries/widget.js:2",
+     "model": "Widget",
+     "op": "findById",
+     "write": false
+    }
+   ]
+  },
+  "controllers/widget/updateWidget.js": {
+   "calls": [
+    "getWidgetById",
+    "updateWidgetById"
+   ],
+   "models": [
+    {
+     "loc": "database/queries/widget.js:2",
+     "model": "Widget",
+     "op": "findById",
+     "write": false
+    },
+    {
+     "loc": "database/queries/widget.js:3",
+     "model": "Widget",
+     "op": "findByIdAndUpdate",
+     "write": true
+    }
+   ]
+  }
+ },
+ "queries": {
+  "deleteWidgetById": [
+   {
+    "loc": "database/queries/widget.js:4",
+    "model": "Widget",
+    "op": "findByIdAndDelete",
+    "write": true
+   }
+  ],
+  "getWidgetById": [
+   {
+    "loc": "database/queries/widget.js:2",
+    "model": "Widget",
+    "op": "findById",
+    "write": false
+   }
+  ],
+  "updateUserById": [
+   {
+    "loc": "database/queries/user.js:2",
+    "model": "User",
+    "op": "findByIdAndUpdate",
+    "write": true
+   }
+  ],
+  "updateWidgetById": [
+   {
+    "loc": "database/queries/widget.js:3",
+    "model": "Widget",
+    "op": "findByIdAndUpdate",
+    "write": true
+   }
+  ]
+ },
+ "stats": {
+  "controllersWithDb": 4,
+  "models": 3,
+  "queryFns": 4
+ }
+}

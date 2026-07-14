@@ -1,0 +1,16 @@
+{
+  "name": "codebase-audit-skill",
+  "version": "1.0.0",
+  "description": "Deterministic codebase-audit skill: reverse-engineers a per-role actor model and generates provenance-linked authorization/IDOR + dependency-exploitability candidates for a human/LLM gate. Node/Express+Mongoose + React/Redux; extensible via a facet contract.",
+  "scripts": {
+    "test": "python3 probes/test/run_tests.py",
+    "audit": "python3 probes/run.py"
+  },
+  "keywords": ["security", "audit", "idor", "bola", "authorization", "static-analysis", "actor-model", "ast", "mongoose", "express", "react", "redux"],
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@babel/traverse": "^7.29.7"
+  }
+}

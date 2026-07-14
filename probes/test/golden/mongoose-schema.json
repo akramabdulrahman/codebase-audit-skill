@@ -1,0 +1,26 @@
+{
+ "errors": [],
+ "facet_error": "mongoose not installed \u2014 used AST fallback (less precise than schema reflection)",
+ "model_names": [
+  "Org",
+  "User",
+  "Widget"
+ ],
+ "owner_links": [
+  {
+   "field": "org",
+   "instance": "ObjectID",
+   "isArray": false,
+   "model": "User",
+   "ref": "Org"
+  },
+  {
+   "field": "org",
+   "instance": "ObjectID",
+   "isArray": false,
+   "model": "Widget",
+   "ref": "Org"
+  }
+ ],
+ "source": "ast"
+}

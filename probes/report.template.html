@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Actor-model audit</title>
+<style>
+:root{
+  --bg:#f5f7f9; --surface:#fff; --surface2:#eef1f4; --ink:#181b1f; --muted:#5c6672; --faint:#8a94a0;
+  --border:#e2e6ea; --accent:#3a56d4; --accent-soft:#e6ebfd;
+  --bypass:#d83a3f; --bypass-soft:#fbe7e7; --drift:#b8860b; --drift-soft:#f7eecf;
+  --slate:#5f6b78; --slate-soft:#e9edf1; --agree:#1f8a5b; --agree-soft:#e0f0e8; --write:#c0413f;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0e1114; --surface:#161a1e; --surface2:#1d2228; --ink:#e7eaee; --muted:#98a2ae; --faint:#69737f;
+  --border:#262c33; --accent:#7590ff; --accent-soft:#1c2440;
+  --bypass:#f2686c; --bypass-soft:#3a1c1e; --drift:#e2b53c; --drift-soft:#332a12;
+  --slate:#95a1ae; --slate-soft:#232a31; --agree:#4cc38a; --agree-soft:#12291f; --write:#f2686c;
+}}
+:root[data-theme=light]{
+  --bg:#f5f7f9; --surface:#fff; --surface2:#eef1f4; --ink:#181b1f; --muted:#5c6672; --faint:#8a94a0;
+  --border:#e2e6ea; --accent:#3a56d4; --accent-soft:#e6ebfd;
+  --bypass:#d83a3f; --bypass-soft:#fbe7e7; --drift:#b8860b; --drift-soft:#f7eecf;
+  --slate:#5f6b78; --slate-soft:#e9edf1; --agree:#1f8a5b; --agree-soft:#e0f0e8; --write:#c0413f;
+}
+:root[data-theme=dark]{
+  --bg:#0e1114; --surface:#161a1e; --surface2:#1d2228; --ink:#e7eaee; --muted:#98a2ae; --faint:#69737f;
+  --border:#262c33; --accent:#7590ff; --accent-soft:#1c2440;
+  --bypass:#f2686c; --bypass-soft:#3a1c1e; --drift:#e2b53c; --drift-soft:#332a12;
+  --slate:#95a1ae; --slate-soft:#232a31; --agree:#4cc38a; --agree-soft:#12291f; --write:#f2686c;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;
+  -webkit-font-smoothing:antialiased;font-size:15px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px 80px}
+header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:18px 0 14px;margin-bottom:26px}
+.hrow{max-width:1080px;margin:0 auto;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap}
+h1{font-size:19px;font-weight:640;margin:0;letter-spacing:-.01em}
+h1 .proj{color:var(--accent)}
+.sub{color:var(--muted);font-size:13px;margin-top:2px}
+.det{font-size:12px;color:var(--faint);font-family:var(--mono)}
+.stats{max-width:1080px;margin:12px auto 0;padding:0 20px;display:flex;gap:8px;flex-wrap:wrap}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px 12px;min-width:92px}
+.stat b{font-size:19px;font-variant-numeric:tabular-nums;font-weight:650;display:block;letter-spacing:-.01em}
+.stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+h2{font-size:14px;font-weight:640;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+  margin:38px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.classblock{margin-bottom:18px}
+.clabel{display:flex;align-items:center;gap:9px;font-weight:640;font-size:14px;margin-bottom:3px}
+.pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;font-variant-numeric:tabular-nums}
+.cdesc{color:var(--muted);font-size:12.5px;margin:0 0 9px}
+.sev-bypass .pill{background:var(--bypass-soft);color:var(--bypass)} .sev-bypass .dot{background:var(--bypass)}
+.sev-drift .pill{background:var(--drift-soft);color:var(--drift)} .sev-drift .dot{background:var(--drift)}
+.sev-slate .pill{background:var(--slate-soft);color:var(--slate)} .sev-slate .dot{background:var(--slate)}
+.sev-agree .pill{background:var(--agree-soft);color:var(--agree)} .sev-agree .dot{background:var(--agree)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.rows{display:flex;flex-direction:column;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:9px;overflow:hidden}
+.row{background:var(--surface);padding:9px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px}
+.row.w{box-shadow:inset 3px 0 0 var(--write)}
+.m{font-family:var(--mono);font-size:11px;font-weight:700;padding:1px 6px;border-radius:5px;background:var(--surface2);letter-spacing:.02em}
+.m.GET{color:var(--agree)}.m.POST{color:var(--accent)}.m.PATCH{color:var(--drift)}.m.PUT{color:var(--drift)}.m.DELETE{color:var(--bypass)}
+.path{font-family:var(--mono);font-size:12.5px;flex:1;min-width:200px;word-break:break-all}
+.badge{font-size:10.5px;font-family:var(--mono);padding:1px 6px;border-radius:5px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.badge.auth-authed-any,.badge.auth-open{color:var(--bypass);border-color:color-mix(in srgb,var(--bypass) 40%,var(--border))}
+.roleset{font-size:11px;color:var(--muted)} .roleset b{color:var(--ink);font-weight:600}
+.tag{font-size:10.5px;padding:1px 6px;border-radius:5px;background:var(--surface2);color:var(--muted);font-family:var(--mono)}
+.wmark{color:var(--write);font-weight:700}
+/* roles */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.tab{font:inherit;font-size:13px;padding:6px 13px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+  color:var(--ink);cursor:pointer;display:flex;align-items:center;gap:7px}
+.tab:hover{border-color:var(--accent)}
+.tab[aria-selected=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+.tab .n{font-size:11px;opacity:.7;font-variant-numeric:tabular-nums}
+.tab[aria-selected=true] .n{opacity:.85}
+.cap{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:9px}
+.cap.w{box-shadow:inset 4px 0 0 var(--write)}
+.cap-h{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.cap-page{font-weight:640;font-size:13.5px}
+.cap-arrow{color:var(--faint)}
+.cap-line{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cap-sub{margin-top:7px;display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px}
+.cap-sub .k{color:var(--faint);text-transform:uppercase;letter-spacing:.04em;font-size:10px;margin-right:5px}
+.chips{display:flex;gap:5px;flex-wrap:wrap}
+.controls{display:flex;gap:14px;align-items:center;margin-bottom:14px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.controls label{display:flex;gap:6px;align-items:center;cursor:pointer}
+.ev{flex-basis:100%;margin-top:7px}
+.ev summary{cursor:pointer;color:var(--muted);font-size:11px;list-style:none;user-select:none}
+.ev summary::before{content:"▸ ";color:var(--accent)}
+.ev[open] summary::before{content:"▾ "}
+.ev summary:hover{color:var(--accent)}
+.pchain{margin-top:5px;display:flex;flex-direction:column;gap:0}
+.pstep{display:flex;gap:10px;align-items:baseline;padding:3px 0 3px 10px;border-left:2px solid var(--border);font-size:11px}
+.pk{color:var(--accent);min-width:104px;font-weight:600;flex:none}
+.pd{flex:1;font-family:var(--mono);color:var(--ink);word-break:break-all}
+.ploc{color:var(--faint);font-family:var(--mono);white-space:nowrap}
+.foot{margin-top:34px;padding-top:16px;border-top:1px solid var(--border);color:var(--faint);font-size:12px}
+.foot b{color:var(--muted)}
+.themed{position:absolute;right:20px;top:16px}
+.tbtn{font:inherit;font-size:12px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <div>
+      <h1><span class="proj" id="proj">project</span> — actor-model audit</h1>
+      <div class="sub">Deterministic frontend⇄backend map · role → page → API → DB → state. No LLM in the extraction.</div>
+    </div>
+    <div class="det" id="det"></div>
+  </div>
+  <div class="stats" id="stats"></div>
+  <button class="tbtn themed" id="themeBtn" aria-label="toggle theme">◑ theme</button>
+</header>
+<div class="wrap">
+  <div id="covbanner"></div>
+  <section>
+    <h2>Authorization intersection — backend enforced ⋂ client exposed</h2>
+    <div id="intersect"></div>
+  </section>
+  <section>
+    <h2>IDOR candidates — sibling-asymmetry (a handler omits the ownership check its siblings enforce)</h2>
+    <div id="idor"></div>
+  </section>
+  <section>
+    <h2>Functional requirements per role — action ⇒ DB ⇒ back</h2>
+    <div class="tabs" id="tabs"></div>
+    <div class="controls">
+      <label><input type="checkbox" id="writesOnly"> writes only (DB-mutating paths)</label>
+      <span id="roleMeta"></span>
+    </div>
+    <div id="caps"></div>
+  </section>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const DATA = __DATA__;
+const $=(s,r=document)=>r.querySelector(s); const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
+const esc=s=>String(s).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+function provHtml(prov){
+  const steps=(prov||[]).filter(s=>s.loc);
+  if(!steps.length) return '';
+  const rows=steps.map(s=>`<div class="pstep"><span class="pk">${esc(s.step)}</span><span class="pd">${esc(s.detail||'')}</span><span class="ploc">${esc(s.loc)}</span></div>`).join('');
+  return `<details class="ev"><summary>how this was derived — ${steps.length} evidence steps (revise the proof)</summary><div class="pchain">${rows}</div></details>`;
+}
+
+// header
+$('#proj').textContent=DATA.project;
+$('#det').textContent='deterministic · '+DATA.stats.backend_routes+' routes · '+DATA.stats.db_query_fns+' query fns';
+const S=DATA.stats;
+const statDefs=[['backend_routes','routes'],['ui_routes','ui routes'],['thunks','thunks'],['db_query_fns','query fns'],['state_slices','state slices'],['roles','roles']];
+statDefs.forEach(([k,l])=>{const s=el('div','stat');s.innerHTML=`<b>${S[k]}</b><span>${l}</span>`;$('#stats').appendChild(s);});
+
+// coverage banner — refuse to read as "clean" when the extractor didn't match the stack
+(function(){
+  const cov=DATA.coverage||{};
+  if(cov.coverage_ok===false){
+    const b=el('div');
+    b.style.cssText='background:var(--bypass-soft);border:1px solid var(--bypass);border-radius:10px;padding:14px 16px;margin-bottom:20px';
+    b.innerHTML=`<div style="font-weight:700;color:var(--bypass);margin-bottom:5px">⚠ Low coverage — this is NOT a clean bill of health</div>`+
+      `<div style="font-size:13px;color:var(--ink)">The extractor did not fully understand this stack, so unresolved areas are <b>UNKNOWN, not safe</b>. Findings below cover only what was resolved.</div>`+
+      `<ul style="margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--muted)">`+(cov.warnings||[]).map(w=>`<li>${esc(w)}</li>`).join('')+`</ul>`;
+    $('#covbanner').appendChild(b);
+  } else if(cov.facets){
+    const b=el('div');b.style.cssText='font-size:11.5px;color:var(--faint);margin-bottom:16px';
+    b.innerHTML='coverage: '+Object.entries(cov.facets).map(([k,f])=>`${k} ${f.resolved}/~${f.raw_candidates}`).join(' · ');
+    $('#covbanner').appendChild(b);
+  }
+})();
+
+// auth mix chip line into first section
+const CLASSMETA={
+ 'CLIENT-SIDE-ONLY-AUTHZ':['sev-bypass','Server = any-authenticated / open, but the UI restricts to a role subset → the role gate lives only on the client. Direct API call bypasses it. Highest signal.'],
+ 'FRONTEND-BROADER':['sev-drift','UI exposes the call to roles the server rejects → dead UI or client/server drift.'],
+ 'BACKEND-BROADER':['sev-slate','Server allows roles no UI reaches → over-granted or non-UI consumer.'],
+ 'BACKEND-ONLY':['sev-slate','No UI page reaches it → API-only (craft-a-request) surface.'],
+ 'AGREEMENT':['sev-agree','Backend roles == frontend roles → intended, corroborated surface.'],
+};
+const ic=$('#intersect');
+for(const cls of Object.keys(DATA.intersect)){
+  const rows=DATA.intersect[cls]; if(!rows.length)continue;
+  const [sev,desc]=CLASSMETA[cls];
+  const b=el('div','classblock '+sev);
+  b.appendChild(el('div','clabel',`<span class="dot"></span>${cls}<span class="pill">${rows.length}</span>`));
+  b.appendChild(el('div','cdesc',desc));
+  const rc=el('div','rows');
+  const show=cls==='AGREEMENT'||cls==='BACKEND-ONLY'?rows.slice(0,14):rows;
+  for(const r of show){
+    const row=el('div','row'+(r.writes?' w':''));
+    let roles='';
+    if(cls==='AGREEMENT') roles=`<span class="roleset">roles <b>${r.backend.join(', ')||'—'}</b></span>`;
+    else roles=`<span class="roleset">server <b>${r.backend.join(',')||(r.auth)}</b> · ui <b>${r.frontend.join(',')||'—'}</b></span>`;
+    row.innerHTML=`<span class="m ${r.method}">${r.method}</span><span class="path">${esc(r.path)}</span>`+
+      `<span class="badge auth-${r.auth}">${r.auth}</span>${roles}`+
+      (r.writes?'<span class="wmark" title="mutates DB">✍</span>':'')+
+      (r.pages.length?`<span class="tag">${esc(r.pages.slice(0,2).join(', '))}</span>`:'')+
+      provHtml(r.prov);
+    rc.appendChild(row);
+  }
+  if(show.length<rows.length){const more=el('div','row');more.innerHTML=`<span class="path" style="color:var(--faint)">+ ${rows.length-show.length} more…</span>`;rc.appendChild(more);}
+  b.appendChild(rc); ic.appendChild(b);
+}
+
+// IDOR candidates (sibling-asymmetry) with provenance
+const IDORMETA={HIGH:['sev-bypass','a sibling handler of the same entity PROVES the ownership predicate this one omits — strongest signal'],
+                MEDIUM:['sev-drift','entity known, predicate unconfirmed (ORM-proposed, or a query-level check this pass can\'t see) — verify'],
+                REVIEW:['sev-slate','acts on the caller\'s own identity (self-service?) — confirm the :id is the caller\'s own']};
+const idorBox=$('#idor');
+if(!(DATA.idor||[]).length){ idorBox.innerHTML='<div class="cdesc">No IDOR candidates (no mutating by-id route reachable by a scoped role without an ownership guard).</div>'; }
+for(const tier of ['HIGH','MEDIUM','REVIEW']){
+  const items=(DATA.idor||[]).filter(c=>c.tier===tier); if(!items.length) continue;
+  const [sev,desc]=IDORMETA[tier];
+  const b=el('div','classblock '+sev);
+  b.appendChild(el('div','clabel',`<span class="dot"></span>${tier}<span class="pill">${items.length}</span>`));
+  b.appendChild(el('div','cdesc',desc));
+  const rc=el('div','rows');
+  for(const c of items){
+    const row=el('div','row w');
+    row.innerHTML=`<span class="m ${c.method}">${c.method}</span><span class="path">${esc(c.path)}</span>`+
+      `<span class="badge auth-${c.auth}">${c.auth}</span>`+
+      `<span class="tag">${esc(c.controller)}</span>`+
+      (c.predicate?`<span class="roleset" style="flex-basis:100%;margin-top:3px">missing predicate: <b>${esc(c.predicate)}</b></span>`:'')+
+      provHtml(c.prov);
+    rc.appendChild(row);
+  }
+  b.appendChild(rc); idorBox.appendChild(b);
+}
+
+// roles
+const roleNames=Object.keys(DATA.roles).sort();
+let current=roleNames[0], writesOnly=false;
+const tabs=$('#tabs');
+roleNames.forEach(r=>{
+  const caps=DATA.roles[r];const w=caps.filter(c=>c.writes).length;
+  const t=el('button','tab');t.setAttribute('role','tab');t.dataset.role=r;
+  t.innerHTML=`${r}<span class="n">${caps.length}·${w}✍</span>`;
+  t.onclick=()=>{current=r;render();};
+  tabs.appendChild(t);
+});
+$('#writesOnly').onchange=e=>{writesOnly=e.target.checked;render();};
+function render(){
+  [...tabs.children].forEach(t=>t.setAttribute('aria-selected',t.dataset.role===current));
+  let caps=DATA.roles[current]; const total=caps.length,writes=caps.filter(c=>c.writes).length;
+  if(writesOnly)caps=caps.filter(c=>c.writes);
+  $('#roleMeta').innerHTML=`<b style="color:var(--ink)">${current}</b> — ${total} capabilities, ${writes} write the DB`;
+  const box=$('#caps');box.innerHTML='';
+  for(const c of caps){
+    const card=el('div','cap'+(c.writes?' w':''));
+    const authCls='auth-'+c.auth;
+    const broles=c.broles.length?c.broles.join(', '):c.auth;
+    card.innerHTML=
+      `<div class="cap-h"><span class="m ${c.method}">${c.method}</span><span class="cap-page">${esc(c.page||'?')}</span>`+
+      `<span class="cap-arrow">─▶</span><span class="path">${esc(c.url)}</span>${c.writes?'<span class="wmark">✍</span>':''}</div>`+
+      `<div class="cap-line">${esc(c.thunk)} <span class="cap-arrow">→</span> ${esc(c.controller)} <span class="badge ${authCls}">${broles}</span></div>`+
+      `<div class="cap-sub">`+
+        `<div><span class="k">db</span><span class="chips">${(c.db.length?c.db:['—']).map(d=>`<span class="tag" style="${d.endsWith('*')?'color:var(--write)':''}">${esc(d)}</span>`).join('')}</span></div>`+
+        `<div><span class="k">state</span><span class="chips">${(c.slices.length?c.slices:['—']).map(s=>`<span class="tag">${esc(s)}</span>`).join('')}</span></div>`+
+      `</div>`+
+      provHtml(c.prov);
+    box.appendChild(card);
+  }
+}
+render();
+
+// footer
+$('#foot').innerHTML=`<b>Method.</b> Six deterministic AST/ORM probes emit normalized facets (routes·roles, ui→thunk→api, controller→query→Model.op, thunk→state); analyzers join them. Auth mix: `+
+  Object.entries(DATA.auth_mix).map(([k,v])=>`${v} ${k}`).join(' · ')+`.<br><b>Reading a path.</b> <span class="m PATCH" style="font-size:10px">PATCH</span> on <span class="badge auth-authed-any">authed-any</span> reached by a scoped role via the UI = the role gate is client-side (see CLIENT-SIDE-ONLY-AUTHZ). ✍ = the path writes the DB.<br><b>Honest limits.</b> Frontend role = page-granularity (upper bound; role-gated buttons inherit the page's roles). Candidate generator for a human/LLM gate — not a verdict.`;
+
+// theme toggle
+const root=document.documentElement;
+$('#themeBtn').onclick=()=>{const cur=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');root.setAttribute('data-theme',cur==='dark'?'light':'dark');};
+</script>
+</body>
+</html>

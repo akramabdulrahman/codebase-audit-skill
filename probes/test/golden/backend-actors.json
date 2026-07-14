@@ -1,0 +1,72 @@
+{
+ "role_consts": [
+  "userRoles",
+  "manageRoles"
+ ],
+ "routes": [
+  {
+   "auth": "open",
+   "controller": "controllers/users/login.js",
+   "controllerGated": false,
+   "controllerRoles": [],
+   "loc": "router/index.js:9",
+   "method": "POST",
+   "path": "/api/login",
+   "roles": [],
+   "router": "router/index.js"
+  },
+  {
+   "auth": "authed-any",
+   "controller": "controllers/users/updateSelf.js",
+   "controllerGated": false,
+   "controllerRoles": [],
+   "loc": "router/index.js:10",
+   "method": "PATCH",
+   "path": "/api/me",
+   "roles": [],
+   "router": "router/index.js"
+  },
+  {
+   "auth": "public",
+   "controller": "controllers/widget/getWidget.js",
+   "controllerGated": false,
+   "controllerRoles": [],
+   "loc": "controllers/widget/index.js:8",
+   "method": "GET",
+   "path": "/api/widgets/:id",
+   "roles": [],
+   "router": "controllers/widget/index.js"
+  },
+  {
+   "auth": "roles",
+   "controller": "controllers/widget/updateWidget.js",
+   "controllerGated": false,
+   "controllerRoles": [],
+   "loc": "controllers/widget/index.js:9",
+   "method": "PATCH",
+   "path": "/api/widgets/:id",
+   "roles": [
+    "admin",
+    "orgAdmin"
+   ],
+   "router": "controllers/widget/index.js"
+  },
+  {
+   "auth": "roles",
+   "controller": "controllers/widget/deleteWidget.js",
+   "controllerGated": false,
+   "controllerRoles": [],
+   "loc": "controllers/widget/index.js:10",
+   "method": "DELETE",
+   "path": "/api/widgets/:id",
+   "roles": [
+    "admin",
+    "orgAdmin"
+   ],
+   "router": "controllers/widget/index.js"
+  }
+ ],
+ "stats": {
+  "total": 5
+ }
+}
