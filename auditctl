@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""auditctl — deterministic evidence layer for the legacy audit + regression-net prompt.
+
+No LLM. Produces .audit/ artifacts the model reasons over. Degrades gracefully
+when optional scanners (semgrep/jscpd) are absent. Node/JS-Express aware; the
+route parser is generic enough for most Express apps.
+
+Usage:
+  auditctl index      --target <repo> --out <dir>
+  auditctl entrypoints --target <repo> --out <dir>   # route -> auth/roles map
+  auditctl scan        --target <repo> --out <dir>   # npm audit + optional jscpd + grep detectors
+  auditctl flows       --out <dir> [--max-flows N]   # rank core flows from entrypoints
+  auditctl report      --out <dir>
+  auditctl all         --target <repo> --out <dir> [--max-flows N]
+"""
+import argparse, json, os, re, subprocess, sys, hashlib, glob, datetime
+
+def sh(cmd, cwd=None, timeout=120):
+    try:
+        p = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str),
+                           capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+def ensure(out):
+    for d in ("", "raw", "findings", "tests", "repro"):
+        os.makedirs(os.path.join(out, d), exist_ok=True)
+
+def write_json(out, name, obj):
+    with open(os.path.join(out, name), "w") as f:
+        json.dump(obj, f, indent=2)
+
+def append_jsonl(out, name, rows):
+    with open(os.path.join(out, name), "a") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+# ---------- index ----------
+def cmd_index(target, out):
+    ensure(out)
+    _, sha, _ = sh(["git", "rev-parse", "HEAD"], cwd=target)
+    _, branch, _ = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=target)
+    _, files_out, _ = sh(["git", "ls-files"], cwd=target)
+    files = [f for f in files_out.splitlines() if f]
+    if not files:  # not a git checkout of everything; fall back
+        files = [os.path.relpath(p, target) for p in glob.glob(os.path.join(target, "**", "*"), recursive=True)
+                 if os.path.isfile(p) and "node_modules" not in p]
+    ext = {}
+    for f in files:
+        e = os.path.splitext(f)[1] or "(none)"
+        ext[e] = ext.get(e, 0) + 1
+    langs = {k: v for k, v in sorted(ext.items(), key=lambda x: -x[1]) if k in
+             (".js", ".jsx", ".ts", ".tsx", ".py", ".rb", ".go", ".java", ".php")}
+    idx = {
+        "git_sha": sha.strip(), "branch": branch.strip(),
+        "indexed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "file_count": len(files), "languages": langs,
+        "has_server": os.path.isdir(os.path.join(target, "server")),
+        "has_client": os.path.isdir(os.path.join(target, "client")),
+        "scanners_available": detect_scanners(target),
+    }
+    write_json(out, "index.json", idx)
+    print(f"[index] {len(files)} files, sha={sha.strip()[:8]}, langs={list(langs)}")
+    print(f"[index] scanners: {idx['scanners_available']}")
+    return idx
+
+def detect_scanners(target):
+    avail = {}
+    for tool in ("semgrep", "jscpd", "eslint", "madge", "npm"):
+        rc, o, _ = sh(["bash", "-lc", f"command -v {tool} || npx --no-install {tool} --version 2>/dev/null"], cwd=target)
+        avail[tool] = bool(o.strip())
+    # eslint is usually local
+    avail["eslint"] = avail["eslint"] or os.path.exists(os.path.join(target, "server", "node_modules", ".bin", "eslint"))
+    return avail
+
+# ---------- profile (auto-discover project context; replaces a hand-written per-project skill) ----------
+def _read(p, n=20000):
+    try: return open(p, encoding="utf-8", errors="ignore").read()[:n]
+    except Exception: return ""
+
+def cmd_profile(target, out):
+    ensure(out)
+    prof = {"detected_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+
+    # 1) CI config — the most authoritative, in-repo record of what ACTUALLY runs
+    ci = []
+    for pat in (".github/workflows/*.yml", ".github/workflows/*.yaml", ".gitlab-ci.yml",
+                ".circleci/config.yml", "azure-pipelines.yml", "Jenkinsfile"):
+        for f in glob.glob(os.path.join(target, pat)):
+            txt = _read(f, 8000)
+            cmds = re.findall(r"(?m)^\s*(?:-\s*)?(?:run:\s*)?((?:npm|pnpm|yarn|bun|npx|pytest|go|cargo|mvn|rake|bundle|make|docker|docker-compose|migrate-mongo)\b[^\n]*)", txt)
+            ci.append({"file": os.path.relpath(f, target), "commands": sorted(set(c.strip() for c in cmds))[:40]})
+    prof["ci"] = ci  # commands here are the ground truth for "which test stack is live"
+
+    # 2) package manifests + scripts + deps
+    manifests = {}
+    for pj in glob.glob(os.path.join(target, "**", "package.json"), recursive=True):
+        if "node_modules" in pj: continue
+        try: p = json.loads(_read(pj))
+        except Exception: continue
+        rel = os.path.relpath(os.path.dirname(pj), target) or "."
+        deps = {**p.get("dependencies", {}), **p.get("devDependencies", {})}
+        manifests[rel] = {
+            "scripts": p.get("scripts", {}),
+            "test_runners": [d for d in ("vitest","jest","mocha","ava","playwright","@playwright/test","cypress","tap") if d in deps],
+            "orm": [f"{d}@{deps[d]}" for d in ("mongoose","sequelize","typeorm","prisma","@prisma/client","knex","drizzle-orm") if d in deps],
+            "frameworks": [d for d in ("express","koa","fastify","@nestjs/core","next","react","vue") if d in deps],
+        }
+    prof["node_manifests"] = manifests
+    # other ecosystems (light touch)
+    prof["other_ecosystems"] = {
+        "python": os.path.exists(os.path.join(target, "pyproject.toml")) or os.path.exists(os.path.join(target, "requirements.txt")),
+        "ruby": os.path.exists(os.path.join(target, "Gemfile")),
+        "go": os.path.exists(os.path.join(target, "go.mod")),
+    }
+
+    # 3) config files that reveal the stack & how to bring it up
+    present = {}
+    for name in ("vitest.config.js","vitest.config.ts","jest.config.js","jest.config.ts","playwright.config.js","playwright.config.ts",
+                 "docker-compose.yml","docker-compose.yaml","compose.yml",".env.example",".env.sample",
+                 "migrate-mongo-config.js","knexfile.js","pytest.ini","tox.ini","Procfile","README.md","CONTRIBUTING.md","CLAUDE.md","AGENTS.md"):
+        hits = glob.glob(os.path.join(target, "**", name), recursive=True)
+        hits = [os.path.relpath(h, target) for h in hits if "node_modules" not in h]
+        if hits: present[name] = hits[:5]
+    prof["config_files"] = present
+
+    # 4) DB URIs + test-safety gate: env var names that look like connection strings
+    db_env = []
+    for envf in glob.glob(os.path.join(target, "**", ".env.example"), recursive=True) + glob.glob(os.path.join(target, "**", ".env.sample"), recursive=True):
+        if "node_modules" in envf: continue
+        for m in re.finditer(r"(?m)^([A-Z0-9_]*(?:MONGO|DATABASE|DB|POSTGRES|MYSQL|REDIS)[A-Z0-9_]*)\s*=", _read(envf, 4000)):
+            db_env.append(m.group(1))
+    prof["db_env_vars"] = sorted(set(db_env))
+    prof["test_db_safety_gate"] = ("Before any DB-resetting test, confirm the TEST db URI (name containing 'test') "
+        "differs from DEV/PROD. Candidate vars: " + (", ".join(sorted(set(db_env))) or "none found — inspect .env manually"))
+
+    # 5) seed / fixture files (for auth fixtures)
+    seeds = []
+    for pat in ("**/seed*/**/*.json","**/seed*.js","**/fixtures/**/*","**/factories/**/*","**/credentials*.json"):
+        for f in glob.glob(os.path.join(target, pat), recursive=True):
+            if "node_modules" in f or not os.path.isfile(f): continue
+            seeds.append(os.path.relpath(f, target))
+    prof["seed_fixture_files"] = sorted(set(seeds))[:25]
+
+    # 6) candidate test commands to VERIFY BY RUNNING (declared != live)
+    cand = []
+    for rel, m in manifests.items():
+        for k, v in m.get("scripts", {}).items():
+            if re.search(r"test|e2e|vitest|jest|playwright|spec", k, re.I):
+                cand.append({"cwd": rel, "script": k, "cmd": v})
+    prof["candidate_test_commands"] = cand
+    prof["how_to_find_live_stack"] = ("Cross-reference ci[].commands (ground truth) with candidate_test_commands, then "
+        "RUN each candidate in the safest mode; the ones that pass/are wired are LIVE, the rest are legacy/broken. "
+        "Do not trust script names or README claims alone.")
+
+    # 7) STACK classification + lifecycle hooks — the single place the stack is recorded.
+    #    Stage 4 reads prof['stack'] -> loads stacks/<stack>.yaml adapter for the live bring-up.
+    orms = sum((m["orm"] for m in manifests.values()), [])
+    fws = sum((m["frameworks"] for m in manifests.values()), [])
+    blob = " ".join(orms + fws).lower()
+    oe = prof["other_ecosystems"]
+    if "mongoose" in blob and "express" in blob: stack = "node-express-mongoose"
+    elif "mongoose" in blob: stack = "node-mongoose"
+    elif any(k in blob for k in ("prisma", "sequelize", "typeorm", "knex", "drizzle")): stack = "node-sql-orm"
+    elif manifests: stack = "node-generic"
+    elif oe.get("python"): stack = "python"
+    elif oe.get("ruby"): stack = "ruby-rails"
+    elif oe.get("go"): stack = "go"
+    else: stack = "unknown"
+    allscripts = {}
+    for m in manifests.values(): allscripts.update(m.get("scripts", {}))
+    audit_cmd = ("npm audit --json" if manifests else
+                 "pip-audit -f json" if oe.get("python") else
+                 "bundle audit" if oe.get("ruby") else
+                 "govulncheck ./..." if oe.get("go") else None)
+    prof["stack"] = stack
+    prof["lifecycle"] = {
+        "adapter": f"stacks/{stack}.yaml  (teach a new stack by adding this file)",
+        "audit_command": audit_cmd,          # run on install; CAPTURE warnings to .audit/live/deps-warnings.txt
+        "setup_scripts": {k: v for k, v in allscripts.items() if re.search(r"build:?db|seed|migrat|setup|init|bootstrap|db\b", k, re.I)},
+        "run_scripts": {k: v for k, v in allscripts.items() if re.search(r"^(dev|start|serve|server)$", k, re.I)},
+        "db_bringup_files": [f for f in present if "compose" in f or f.startswith("docker") or f in (".env.example", ".env.sample")],
+    }
+
+    write_json(out, "project-profile.json", prof)
+    print(f"[profile] STACK = {stack}  -> adapter stacks/{stack}.yaml")
+    print(f"[profile] lifecycle: audit=`{audit_cmd}`  setup={list(prof['lifecycle']['setup_scripts'])}  run={list(prof['lifecycle']['run_scripts'])}")
+    print(f"[profile] CI files: {[c['file'] for c in ci]}")
+    print(f"[profile] node packages: {list(manifests)}  test runners: { {k:v['test_runners'] for k,v in manifests.items()} }")
+    print(f"[profile] ORM: { {k:v['orm'] for k,v in manifests.items() if v['orm']} }")
+    print(f"[profile] db env vars (safety gate): {prof['db_env_vars']}")
+    print(f"[profile] {len(cand)} candidate test commands to verify-by-running -> project-profile.json")
+    return prof
+
+# ---------- entrypoints (route -> auth map) ----------
+ROUTE_RE = re.compile(r"\b(?:router|app)\.(get|post|put|patch|delete)\s*\(", re.I)
+def balanced_call(text, start):
+    """return substring of the (...) call beginning at index of '(' after method."""
+    i = text.index("(", start)
+    depth, j = 0, i
+    while j < len(text):
+        c = text[j]
+        if c == "(": depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[i:j+1]
+        j += 1
+    return text[i:i+400]
+
+def resolve_role_constants(target):
+    """map role-set constant name -> [members], from server/constants (so we don't misreport 'roles=[]')."""
+    consts = {}
+    for cf in glob.glob(os.path.join(target, "server", "constants", "**", "*.js"), recursive=True) + \
+              glob.glob(os.path.join(target, "constants", "**", "*.js"), recursive=True):
+        txt = _read(cf, 40000)
+        for m in re.finditer(r"const\s+([A-Za-z0-9_]*[Rr]oles?[A-Za-z0-9_]*)\s*=\s*\[([^\]]*)\]", txt):
+            members = [x.strip() for x in m.group(2).split(",") if x.strip()]
+            consts[m.group(1)] = members
+    return consts
+
+def classify_auth(call, role_consts):
+    """return (auth_required, auth_mode, roles, roles_ref)."""
+    if "authentication(" not in call:
+        return (False, "none", [], None)
+    if "allowPublic" in call:
+        return (True, "public-allowed", [], None)
+    lit = re.search(r"allowedRoles\s*:\s*\[([^\]]*)\]", call)
+    if lit:
+        return (True, "roles-literal", [r.strip() for r in lit.group(1).split(",") if r.strip()], None)
+    ref = re.search(r"allowedRoles\s*:\s*([A-Za-z_][A-Za-z0-9_]*)", call)
+    if ref:
+        name = ref.group(1)
+        if name in role_consts:                       # resolved a variable -> real roles
+            return (True, "roles-ref", role_consts[name], name)
+        return (True, "roles-ref-unresolved", [], name)  # e.g. a wrapper param — honest "unknown", not "[]"
+    return (True, "any-authenticated", [], None)      # authentication() with no role arg = any logged-in user
+
+def cmd_entrypoints(target, out):
+    ensure(out)
+    role_consts = resolve_role_constants(target)
+    routes = []
+    search_dirs = [os.path.join(target, "server", "router"),
+                   os.path.join(target, "server", "controllers"),
+                   os.path.join(target, "server", "routes"),
+                   os.path.join(target, "routes")]
+    jsfiles = []
+    for d in search_dirs:
+        jsfiles += glob.glob(os.path.join(d, "**", "*.js"), recursive=True)
+    jsfiles = sorted(set(jsfiles))
+    for fp in jsfiles:
+        try:
+            text = open(fp, encoding="utf-8", errors="ignore").read()
+        except Exception:
+            continue
+        for m in ROUTE_RE.finditer(text):
+            method = m.group(1).upper()
+            call = balanced_call(text, m.start())
+            pth = re.search(r"""\(\s*['"`]([^'"`]+)['"`]""", call)
+            path = pth.group(1) if pth else "?"
+            auth_required, auth_mode, roles, roles_ref = classify_auth(call, role_consts)
+            params = re.findall(r":([A-Za-z0-9_]+)", path)
+            object_param = bool(params) or bool(re.search(r"[?&](id|.*Id|token)=", path))
+            has_ratelimit = "Limiter" in call or "rateLimit" in call
+            line = text[:m.start()].count("\n") + 1
+            routes.append({
+                "method": method, "path": path,
+                "file": os.path.relpath(fp, target), "line": line,
+                "auth_required": auth_required, "auth_mode": auth_mode,
+                "allowed_roles": roles, "roles_ref": roles_ref,
+                "params": params, "object_param": object_param,
+                "rate_limited": has_ratelimit, "public": not auth_required,
+            })
+    append_jsonl(out, "routes.jsonl", routes)
+    modes = {}
+    for r in routes: modes[r["auth_mode"]] = modes.get(r["auth_mode"], 0) + 1
+    idor = [r for r in routes if r["object_param"] and not r["public"] and
+            (r["method"] in ("POST","PUT","PATCH","DELETE") or r["auth_mode"] in ("any-authenticated","roles-ref-unresolved"))]
+    print(f"[entrypoints] {len(routes)} routes parsed from {len(jsfiles)} files; resolved role-consts: {list(role_consts)}")
+    print(f"[entrypoints] auth modes: {modes}")
+    print(f"[entrypoints] {len(idor)} IDOR-surface routes (object id/param + authed, ownership unverifiable statically)")
+    return routes
+
+# ---------- scan ----------
+SECRET_RE = re.compile(r"""(secret|password|api[_-]?key|token)\s*[:=]\s*['"][A-Za-z0-9_\-]{12,}['"]""", re.I)
+def cmd_scan(target, out):
+    ensure(out)
+    findings = []
+    scanners = detect_scanners(target)
+    server = os.path.join(target, "server")
+    cwd = server if os.path.isdir(server) else target
+
+    # 1) npm audit (deps)
+    if scanners.get("npm"):
+        rc, o, e = sh(["npm", "audit", "--json"], cwd=cwd, timeout=180)
+        open(os.path.join(out, "raw", "npm-audit.json"), "w").write(o or e)
+        try:
+            data = json.loads(o)
+            meta = data.get("metadata", {}).get("vulnerabilities", {})
+            findings.append({"finding_id": "DEP-001", "class": "security",
+                "title": f"npm audit: {meta}", "status": "probable",
+                "severity": "high" if meta.get("high",0)+meta.get("critical",0) else "medium",
+                "evidence": ["raw/npm-audit.json"], "counterevidence": [],
+                "reproduction": {"repro_command": "cd server && npm audit", "reproducible": True},
+                "note": "advisory != exploitable; verify reachability before acting"})
+        except Exception:
+            pass
+
+    # 2) duplication (jscpd) — optional
+    if scanners.get("jscpd"):
+        rc, o, e = sh(["npx", "--no-install", "jscpd", "server", "--reporters", "json",
+                       "--output", os.path.join(out, "raw", "jscpd"), "--silent"], cwd=target, timeout=180)
+
+    # 3) route-derived candidates — suppress known-public NOISE, surface the classes that matter
+    EXPECTED_PUBLIC = ("login","logout","sign-in","signin","register","signup","sign-up","subscribe","unsubscribe",
+                       "newsletter","webhook","hacp","aicc","health","status","get-involved","contact","forgot-password",
+                       "reset-password","verify-email","confirm-email","public")
+    def looks_public(path):
+        return any(k in path.lower() for k in EXPECTED_PUBLIC)
+    routes = []
+    routes_path = os.path.join(out, "routes.jsonl")
+    if os.path.exists(routes_path):
+        routes = [json.loads(l) for l in open(routes_path)]
+
+    # IDOR risk requires a NON-GLOBAL actor: an admin-only route legitimately touches any object.
+    GLOBAL = ("admin","superadmin","root")
+    SCOPED = ("tporg","employerorg","programmemanager","trainer","participant","org","owner","user")
+    def actor_is_narrower_than_global(r):
+        if r["auth_mode"] in ("any-authenticated","roles-ref-unresolved"): return True
+        roles = " ".join(r.get("allowed_roles") or []).lower() + " " + (r.get("roles_ref") or "").lower()
+        if not roles.strip(): return True
+        if any(s in roles for s in SCOPED): return True          # includes an org/user-scoped role
+        if all(any(g in x.lower() for g in GLOBAL) for x in (r.get("allowed_roles") or ["admin"])): return False  # admin-only
+        return True
+
+    unexpected_public, idor_p1, idor_p2, seen_idor = [], [], [], set()
+    for r in routes:
+        writeish = r["method"] in ("POST","PUT","PATCH","DELETE")
+        if r["public"] and writeish and not looks_public(r["path"]):
+            unexpected_public.append(r)                      # genuinely suspicious: writes with no auth, not a known-public pattern
+        if (not r["public"]) and r["object_param"] and actor_is_narrower_than_global(r):
+            key = (r["method"], re.sub(r":[A-Za-z0-9_]+", ":x", r["path"]))
+            if key in seen_idor: continue
+            seen_idor.add(key)
+            (idor_p1 if r["method"] in ("DELETE","PUT","PATCH") else idor_p2).append(r)
+    idor_surface = idor_p1                                    # only P1 (mutations) become findings; P2 reads are surface-only
+
+    # secret scan
+    secrets = []
+    for fp in glob.glob(os.path.join(cwd, "**", "*.js"), recursive=True):
+        if "node_modules" in fp: continue
+        try: txt = open(fp, encoding="utf-8", errors="ignore").read()
+        except Exception: continue
+        for mm in SECRET_RE.finditer(txt):
+            secrets.append({"file": os.path.relpath(fp, target), "line": txt[:mm.start()].count("\n")+1, "match": mm.group(0)[:60]})
+    write_json(out, "grep-hits.json", {"unexpected_public": unexpected_public,
+        "idor_p1_mutations": idor_p1, "idor_p2_reads": idor_p2, "secrets": secrets})
+
+    for r in unexpected_public:
+        findings.append({
+            "finding_id": f"SEC-PUB-{r['method']}-{re.sub('[^a-zA-Z0-9]','_',r['path'])[:22]}",
+            "flow_id": None, "class": "security", "weakness": "CWE-306",
+            "title": f"Unauthenticated write {r['method']} {r['path']} (not a known-public pattern)",
+            "status": "hypothesis", "severity": "high",
+            "evidence": [f"{r['file']}:{r['line']}"], "counterevidence": [],
+            "reproduction": {"repro_tier": None, "repro_command": f"curl -X {r['method']} <host>{r['path']}", "reproducible": None},
+            "root_cause": {"location": f"{r['file']}:{r['line']}", "chain": "route has no authentication() and path is not a recognized public endpoint", "is_symptom": False},
+            "note": "auditor: confirm whether intentionally public before promoting."})
+    for r in idor_surface:
+        rr = f" (roles={r['roles_ref']})" if r.get("roles_ref") else (f" ({r['auth_mode']})")
+        findings.append({
+            "finding_id": f"SEC-IDOR-{r['method']}-{re.sub('[^a-zA-Z0-9]','_',r['path'])[:22]}",
+            "flow_id": None, "class": "security", "weakness": "CWE-639",
+            "title": f"Horizontal-authz/IDOR surface: {r['method']} {r['path']}{rr} takes object id but ownership binding is not verifiable statically",
+            "status": "hypothesis", "severity": "high" if r["method"] in ("DELETE","PUT","PATCH") else "medium",
+            "evidence": [f"{r['file']}:{r['line']}"], "counterevidence": [],
+            "reproduction": {"repro_tier": None, "repro_command": None, "reproducible": None,
+                             "repro_test": "cross-owner test: actor of org A operates on object of org B -> expect 403"},
+            "root_cause": {"location": f"{r['file']}:{r['line']}", "chain": f"role gate present ({r['auth_mode']}) but scan cannot confirm the handler binds :{','.join(r['params']) or 'id'} to the caller's ownership", "is_symptom": False},
+            "note": "auditor MUST open the handler/query: does it filter by the caller's org/user, or delete/read by id alone? (This is the class the ICS session-delete lead belonged to.)"})
+
+    append_jsonl(out, "findings/scan.jsonl", findings)
+    print(f"[scan] scanners={ {k:v for k,v in scanners.items() if v} }")
+    print(f"[scan] suppressed {sum(1 for r in routes if r['public'] and r['method'] in ('POST','PUT','PATCH','DELETE') and looks_public(r['path']))} known-public write routes as noise")
+    print(f"[scan] IDOR surface: {len(idor_p1)} P1 mutations (findings) + {len(idor_p2)} P2 reads (surface only); {len(unexpected_public)} unexpected-public; {len(secrets)} secret-like")
+    print(f"[scan] {len(findings)} candidate findings -> findings/scan.jsonl (status=hypothesis; auditor must verify)")
+    return findings
+
+# ---------- flows (rank core flows) ----------
+# money/identity/bulk-data first; ordinary CRUD is 'high'; reads/utility are lower.
+SENSITIVE = ("certificate","export","csv","credential","password","payment","invoice","invitation","role","gdpr","personal","demographic")
+CORE_ENTITY = ("session","programme","module","survey","organisation","contract","user","attendance","booking","waiting-list","finalise","withdraw")
+LOW = ("logout","health","status","ping","version","csrf")
+def cmd_flows(out, max_flows):
+    ensure(out)
+    routes_path = os.path.join(out, "routes.jsonl")
+    if not os.path.exists(routes_path):
+        print("[flows] run entrypoints first"); return []
+    routes = [json.loads(l) for l in open(routes_path)]
+    scored, seen = [], set()
+    for r in routes:
+        hay = (r["path"] + " " + r["file"]).lower()
+        writeish = r["method"] in ("POST","PUT","PATCH","DELETE")
+        reasons = []
+        score = 0
+        if writeish: reasons.append("state-mutation"); score += 2
+        if r["method"] == "DELETE": score += 1
+        if any(k in hay for k in SENSITIVE): reasons.append("sensitive-data"); score += 3
+        if r.get("object_param") and not r["public"]:
+            if writeish: reasons.append("idor-surface(mutating)"); score += 3
+            elif r["auth_mode"] in ("any-authenticated","roles-ref-unresolved"): reasons.append("idor-surface(read)"); score += 1
+        if r["public"] and writeish: reasons.append("public-write"); score += 2
+        if r["auth_mode"] == "any-authenticated" and writeish: reasons.append("no-role-restriction"); score += 1
+        if any(k in hay for k in CORE_ENTITY): score += 1
+        if any(k in hay for k in LOW): score -= 3
+        if not writeish and "idor-surface(read)" not in reasons: score -= 1   # plain reads rank lower
+        crit = "critical" if score >= 7 else "high" if score >= 4 else "medium" if score >= 2 else "low"
+        key = (r["method"], re.sub(r":[A-Za-z0-9_]+", ":x", r["path"]))   # dedupe param-variants
+        if key in seen: continue
+        seen.add(key)
+        scored.append((score, {
+            "flow_id": f"FLOW-{r['method']}-{re.sub('[^a-zA-Z0-9]','-',r['path']).strip('-')[:28]}",
+            "entry": f"{r['method']} {r['path']} -> {r['file']}",
+            "criticality": crit, "score": score, "reasons": reasons or ["read"],
+            "auth_mode": r["auth_mode"], "allowed_roles": r["allowed_roles"], "roles_ref": r.get("roles_ref"),
+            "existing_tests": [], "evidence": [f"{r['file']}:{r['line']}"]}))
+    scored.sort(key=lambda x: -x[0])
+    flows = [s[1] for s in scored[:max_flows]]
+    with open(os.path.join(out, "flows.yaml"), "w") as f:
+        f.write("# core flows to protect with the regression net (ranked by risk score)\n")
+        for fl in flows:
+            f.write(json.dumps(fl) + "\n")
+    dist = {}
+    for fl in flows: dist[fl["criticality"]] = dist.get(fl["criticality"],0)+1
+    print(f"[flows] selected {len(flows)}/{len(seen)} distinct flows (--max-flows {max_flows}); severity spread: {dist}")
+    for fl in flows[:12]:
+        print(f"        [{fl['criticality']:8}] {fl['entry']}  {fl['reasons']}")
+    return flows
+
+# ---------- report ----------
+def cmd_report(out):
+    idx = json.load(open(os.path.join(out,"index.json"))) if os.path.exists(os.path.join(out,"index.json")) else {}
+    L = [f"# Audit — deterministic pass (auditctl)",
+         f"\n`{idx.get('git_sha','?')[:8]}` · branch `{idx.get('branch','?')}` · {idx.get('file_count','?')} files · scanners "
+         f"{[k for k,v in idx.get('scanners_available',{}).items() if v]}",
+         "\n> Deterministic candidates only — every finding is `status:hypothesis` and needs the auditor (read code) "
+         "then a reproduction before it is real. This pass generates leads and suppresses noise; it does not confirm bugs.\n"]
+
+    routes = [json.loads(l) for l in open(os.path.join(out,"routes.jsonl"))] if os.path.exists(os.path.join(out,"routes.jsonl")) else []
+    if routes:
+        modes = {}
+        for r in routes: modes[r["auth_mode"]] = modes.get(r["auth_mode"],0)+1
+        L.append(f"## Route authorization map: {len(routes)} routes")
+        L.append(f"auth modes: " + ", ".join(f"`{k}`={v}" for k,v in sorted(modes.items(), key=lambda x:-x[1])) + "\n")
+        unresolved = [r for r in routes if r["auth_mode"]=="roles-ref-unresolved"]
+        if unresolved:
+            L.append(f"⚠ {len(unresolved)} routes guard on a role variable/wrapper the parser couldn't resolve "
+                     f"(e.g. `{unresolved[0]['roles_ref']}`) — auditor must resolve before trusting the map.\n")
+
+    gh = json.load(open(os.path.join(out,"grep-hits.json"))) if os.path.exists(os.path.join(out,"grep-hits.json")) else {}
+    idor_p1 = gh.get("idor_p1_mutations", []); idor_p2 = gh.get("idor_p2_reads", []); up = gh.get("unexpected_public", []); sec = gh.get("secrets", [])
+    L.append("## Priority leads (noise suppressed)\n")
+    L.append(f"### 🔴 IDOR / horizontal-authz — P1 mutations: {len(idor_p1)} routes  (check these first)")
+    L.append("Authed + non-global actor (org/user-scoped or any-authenticated) mutating an object by id. Admin-only routes excluded (a global role may legitimately touch any object). **Auditor: open each handler/query — does it filter by the caller's org/user, or act by id alone?**\n")
+    for r in idor_p1:
+        rr = r.get("roles_ref") or (",".join(r.get("allowed_roles") or []) or r["auth_mode"])
+        L.append(f"- `{r['method']} {r['path']}` (roles: {rr}) — {r['file']}:{r['line']}")
+    L.append(f"\n_P2 read surface: {len(idor_p2)} authed object-scoped GET routes (potential data exposure, lower priority — not itemized; see grep-hits.json)._")
+    L.append(f"\n### 🟠 Unexpected unauthenticated writes: {len(up)}  (known-public patterns already filtered out)")
+    for r in up[:20]:
+        L.append(f"- `{r['method']} {r['path']}` — {r['file']}:{r['line']}")
+    if sec:
+        L.append(f"\n### 🟡 Secret-like literals: {len(sec)}")
+        for s in sec[:10]: L.append(f"- {s['file']}:{s['line']}")
+
+    # deps
+    raw = os.path.join(out,"raw","npm-audit.json")
+    if os.path.exists(raw):
+        try:
+            meta = json.load(open(raw)).get("metadata",{}).get("vulnerabilities",{})
+            L.append(f"\n### 🟡 Dependency advisories (npm audit): {meta}  — advisory ≠ exploitable; verify reachability")
+        except Exception: pass
+
+    flows = [json.loads(l) for l in open(os.path.join(out,"flows.yaml")) if l.strip() and not l.startswith("#")] if os.path.exists(os.path.join(out,"flows.yaml")) else []
+    if flows:
+        dist = {}
+        for fl in flows: dist[fl["criticality"]] = dist.get(fl["criticality"],0)+1
+        L.append(f"\n## Core flows for the regression net: {len(flows)}  (severity spread: {dist})\n")
+        for fl in flows:
+            L.append(f"- **{fl['criticality']}** (score {fl.get('score','?')}) `{fl['entry']}` — {fl['reasons']}")
+
+    open(os.path.join(out, "report.md"), "w").write("\n".join(L) + "\n")
+    print(f"[report] -> {os.path.join(out,'report.md')}")
+
+# ---------- history (mine THIS repo's own recurring bug classes from git) ----------
+def cmd_history(target, out):
+    """Generalizes the ICS issues.md insight: a repo's fix-commit history reveals ITS
+    recurring bug classes — the highest-yield lens for where to look. No LLM."""
+    ensure(out)
+    rc, o_, e = sh(["git", "log", "--no-merges", "-i", "--pretty=%s", "-3000"], cwd=target)
+    subjects = [s for s in o_.splitlines() if s.strip()]
+    THEMES = {
+        "authz/IDOR/access": r"idor|bola|authoriz|permission|access|scope|org.?admin|tenant|bypass|privileg",
+        "auth/session": r"\bauth\b|login|logout|token|session|jwt|cookie",
+        "state/lifecycle": r"finali[sz]|reopen|status|transition|idempoten|duplicat|race|concurren",
+        "boundary/data": r"off.by|null|undefined|empty|pagination|boundary|overflow|round|timezone|\bdate\b",
+        "error-handling": r"unhandled|swallow|crash|hang|500|throw|catch|await",
+        "migration/data-shape": r"migrat|backfill|data.?shape|seed|schema",
+        "injection/xss/escape": r"inject|xss|escape|sanitiz|html|sql",
+    }
+    counts, examples = {}, {}
+    fixes = [s for s in subjects if re.search(r"fix|bug|prevent|revert|guard|patch|hotfix|regress", s, re.I)]
+    for s in fixes:
+        for theme, pat in THEMES.items():
+            if re.search(pat, s, re.I):
+                counts[theme] = counts.get(theme, 0) + 1
+                examples.setdefault(theme, []).append(s[:100])
+    L = ["# This repo's recurring bug classes (mined from git fix-commits)\n",
+         f"{len(fixes)} fix/bug commits scanned of {len(subjects)} total. Ranked by frequency — these are where *this* codebase actually breaks; prioritize the scan here.\n"]
+    for theme, n in sorted(counts.items(), key=lambda x: -x[1]):
+        L.append(f"## {theme} — {n} fixes")
+        for ex in examples[theme][:5]:
+            L.append(f"- {ex}")
+        L.append("")
+    write_json(out, "bug-history.json", {"fix_commits": len(fixes), "themes": counts, "examples": {k: v[:8] for k, v in examples.items()}})
+    open(os.path.join(out, "bug-history.md"), "w").write("\n".join(L) + "\n")
+    print(f"[history] {len(fixes)} fix-commits; recurring classes: {dict(sorted(counts.items(), key=lambda x:-x[1]))}")
+    print(f"[history] -> {os.path.join(out,'bug-history.md')}")
+
+# ---------- trace (git archaeology: reconstruct the progression of decisions for a symbol/line) ----------
+def cmd_trace(target, symbol, path=None):
+    """C8 intent-recovery: before asking a human whether a construct is intended, replay how it
+    got this way. Pickaxe (-S) shows every commit that added/removed the symbol, oldest->newest;
+    the sequence + messages reveal deliberate design vs patchwork vs an unfinished migration."""
+    args = ["git", "log", "--reverse", "--date=short", "--pretty=%h %ad %s", f"-S{symbol}"]
+    if path: args += ["--", path]
+    rc, o, e = sh(args, cwd=target)
+    lines = [l for l in o.splitlines() if l.strip()]
+    print(f"[trace] progression of `{symbol}`{' in '+path if path else ''} — {len(lines)} commits (oldest first):")
+    for l in lines: print("  " + l[:160])
+    if not lines: print("  (none — check symbol/path)")
+    print("  -> read the sequence: co-introduced? later patched one-path-at-a-time? = unfinished migration; "
+          "each fix moving toward one source = that source is the intended SSOT.")
+
+# ---------- sarif (findings -> SARIF 2.1.0 for CI / security-tool interop) ----------
+def cmd_sarif(out):
+    rules, results = {}, []
+    for name in ("findings/scan.jsonl", "findings.jsonl", "findings/verified.jsonl"):
+        p = os.path.join(out, name)
+        if not os.path.exists(p): continue
+        for line in open(p):
+            try: f = json.loads(line)
+            except Exception: continue
+            rid = f.get("weakness") or f.get("class") or "finding"
+            rules.setdefault(rid, {"id": rid, "name": rid,
+                "shortDescription": {"text": f.get("class", "finding")}})
+            loc = (f.get("evidence") or [f.get("root_cause", {}).get("location", "")])[0] or ""
+            path, _, ln = loc.partition(":")
+            level = {"critical": "error", "high": "error", "medium": "warning", "low": "note"}.get(f.get("severity", ""), "warning")
+            results.append({
+                "ruleId": rid, "level": level,
+                "message": {"text": f"[{f.get('status','?')}] {f.get('title','')}"},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": path},
+                    "region": {"startLine": int(ln) if ln.split('-')[0].isdigit() else 1}}}]})
+    sarif = {"version": "2.1.0",
+             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+             "runs": [{"tool": {"driver": {"name": "auditctl", "rules": list(rules.values())}},
+                       "results": results}]}
+    write_json(out, "findings.sarif", sarif)
+    print(f"[sarif] {len(results)} results -> {os.path.join(out,'findings.sarif')}")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["index","profile","history","entrypoints","scan","flows","report","sarif","trace","all"])
+    ap.add_argument("--target", default=".")
+    ap.add_argument("--out", default=".audit")
+    ap.add_argument("--max-flows", type=int, default=15)
+    ap.add_argument("--symbol", default=None, help="for `trace`: the symbol/string to follow through git history")
+    ap.add_argument("--path", default=None, help="for `trace`: optional file to scope the pickaxe to")
+    a = ap.parse_args()
+    t = os.path.abspath(a.target); o = os.path.abspath(a.out)
+    if a.cmd in ("index","all"): cmd_index(t,o)
+    if a.cmd in ("profile","all"): cmd_profile(t,o)
+    if a.cmd in ("history","all"): cmd_history(t,o)
+    if a.cmd in ("entrypoints","all"): cmd_entrypoints(t,o)
+    if a.cmd in ("scan","all"): cmd_scan(t,o)
+    if a.cmd in ("flows","all"): cmd_flows(o, a.max_flows)
+    if a.cmd in ("report","all"): cmd_report(o)
+    if a.cmd == "sarif": cmd_sarif(o)
+    if a.cmd == "trace": cmd_trace(t, a.symbol, a.path)
+
+if __name__ == "__main__":
+    main()

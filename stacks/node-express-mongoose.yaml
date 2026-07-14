@@ -1,0 +1,44 @@
+id: node-express-mongoose
+detect: { orm: mongoose, framework: express, manifest: package.json }
+# Project-specific values (script names, ports, DB URIs) come from .audit/project-profile.json.
+# This file declares the generic lifecycle for the stack.
+
+install:
+  steps:
+    - "Detect package manager: bun.lock -> bun install; package-lock.json -> npm ci; pnpm-lock.yaml -> pnpm i --frozen-lockfile."
+    - "Install in each package dir (root, then server/, then client/ if present)."
+    - "bun note: it blocks some postinstalls (e.g. @swc/core needed for client dev; sentry cpu-profiler is prod-only, safe to skip)."
+  capture_audit:
+    command: "npm audit --json"          # from profile.lifecycle.audit_command
+    output: ".audit/live/deps-warnings.json"
+    note: "First-class output. Summarize high/critical to deps-warnings.md; DO NOT auto-`audit fix` (may break). Reachability triaged separately (Stage 3)."
+
+db_setup:
+  discover:                               # profile.lifecycle already lists these
+    - "docker-compose*.yml / compose.yml  (services: mongo/postgres)"
+    - "scripts matching build:db|seed|migrate|setup  (profile.lifecycle.setup_scripts)"
+    - ".env.example / .env.sample  -> copy to .env, set a non-placeholder SECRET"
+    - "DB env vars (profile.db_env_vars)  e.g. MONGOURI_DEV / MONGOURI_TEST / MONGO_URI"
+  bring_up:
+    - "Start Mongo: docker run -d --name <proj>_mongo -p 27017:27017 mongo:<major> --noauth  (or docker compose up -d)"
+    - "Build/seed the DEV or TEST db via the discovered setup script (e.g. `npm run build:db` = reset + seed + migrate)."
+    - "migrate-mongo gotcha: it reads MONGO_URI only, ignoring NODE_ENV — set MONGO_URI explicitly when migrating."
+  SAFETY_GATE: "Before ANY DB-resetting step confirm the TEST URI (name contains 'test') != DEV/PROD. If profile.db_env_vars is empty, inspect .env manually and STOP if unsure."
+
+run:
+  discover: "profile.lifecycle.run_scripts (dev|start|server); default `npm run dev` (server+client)."
+  ports: "server default 4000 (override PORT=), client 3000 (Vite proxies /api). Use alt ports if siblings hold them."
+  health_check: "GET the app root or a known route on the server port returns 2xx/knownstatus."
+  alt_ports: "If 3000/4000 busy: PORT=4001 node server; vite --port 3100 (revert any proxy edit before committing)."
+
+test:
+  find_live_runner: "Cross-ref CI (.github/workflows) with declared scripts, then RUN each candidate; the ones that pass are LIVE (e.g. ICS: vitest live, jest broken)."
+  levels:
+    unit_integration: "vitest | jest  (server/__test__)  — seeds an isolated TEST db"
+    e2e: "playwright (e2e/)  — free ports + seed"
+  fixtures: "seed identities from profile.seed_fixture_files (e.g. credentials.json); build one actor per role + a 2nd org for cross-owner (BOLA) tests."
+
+teardown:
+  - "Stop app process; `docker stop <proj>_mongo` (or `docker compose down`). Never drop a non-test DB."
+
+known_warnings_notes: ".audit/live/deps-warnings.md  — keep the npm audit high/critical list here across runs so the trend is visible."
