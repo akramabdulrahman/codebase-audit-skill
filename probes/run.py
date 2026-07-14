@@ -96,5 +96,26 @@ if server and client:
     for l in r.stdout.splitlines():
         if l.startswith(("report:", "stats:", "intersect:")): print("  " + l)
 
-print(f"\nDone. Facts: {out}/facts/  Analysis: {out}/analysis/  Report: {out}/report.html")
+# ---- 5. actor model (the deliverable): render the per-role handbook from the report payload ----
+payload = os.path.splitext(os.path.join(out, "report.html"))[0] + ".json"
+if server and client and os.path.exists(payload):
+    ent = os.path.join(out, "facts", "entities.json")
+    am = os.path.join(out, "actor-model.md")
+    r = run(["python3", os.path.join(HERE, "handbook.py"), payload] + (["--entities", ent] if os.path.exists(ent) else []) + ["--out", am], env=env)
+    print("\n== actor model ==")
+    for l in r.stdout.splitlines():
+        if "->" in l: print("  " + l.strip())
+
+# ---- 6. fragile flows (git-history mining): the flows the team keeps fixing, joined to the actor model ----
+if server:
+    r = run(["python3", os.path.join(HERE, "fragile-flows.py"), server] + ([client] if client else []), env=env)
+    if r.stdout.strip():
+        save(os.path.join(out, "analysis", "fragile-flows.txt"), r.stdout)
+        print("\n== fragile flows (from git history) ==")
+        for l in r.stdout.splitlines():
+            if "⚠ IDOR" in l: print("  " + l.strip()[:150])   # surface the fragile-AND-insecure flows
+        n = sum(1 for l in r.stdout.splitlines() if l.strip().startswith("[") and "fixed" in l)
+        print(f"  {n} fragile flows -> analysis/fragile-flows.txt")
+
+print(f"\nDone. Facts: {out}/facts/  Analysis: {out}/analysis/  Report: {out}/report.html  Actor model: {out}/actor-model.md")
 print("These are CANDIDATES for the human/LLM gate (Stage 1 actor-model verify + Stage 2 triage). Not a verdict.")
