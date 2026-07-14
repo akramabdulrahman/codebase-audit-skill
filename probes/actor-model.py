@@ -56,8 +56,15 @@ def entities_of(k):
     ms = db.get(k, {}).get("models", [])
     ws = [norm(o["model"], names) for o in ms if o.get("write")]
     return ws or [norm(o["model"], names) for o in ms]
-def primary_entity(k):
-    # the model this controller writes that a SIBLING proves a predicate for; else its first write model.
+def all_models(k):
+    return [norm(o["model"], names) for o in db.get(k, {}).get("models", [])]
+def primary_entity(k, path=""):
+    # 1. the object the URL names (the :id resource) — often a READ target — if a sibling proves a predicate for it.
+    #    (fixes e.g. /sessions/:sessionId/attendeesList picking a written User over the session it's scoped to.)
+    segs = re.findall(r"[a-z]+", (path or "").lower())
+    for e in all_models(k):
+        if confirmed.get(e) and any(e.lower().rstrip("s") == s.rstrip("s") for s in segs): return e
+    # 2. else a WRITTEN model a sibling proves a predicate for; else its first write model.
     ents = entities_of(k)
     return next((e for e in ents if confirmed.get(e)), (ents[0] if ents else None))
 
@@ -101,7 +108,7 @@ for r in actors:
         gr = g.get("guardRoles")                                 # None = covers all; [roles] = only these
         if gr is None or not scoped or scoped <= set(gr): continue   # fully covered -> cleared
         guard_uncovered = sorted(scoped - set(gr))               # role-conditional guard leaves these roles unchecked
-    ent = primary_entity(k)
+    ent = primary_entity(k, r["path"])
     writes = [o for o in db.get(k, {}).get("models", []) if o.get("write")]
     # provenance: the route reached + the unguarded mutation site(s) + the sibling that proves the predicate
     prov = [{"step": "reachable route", "loc": r.get("loc"),

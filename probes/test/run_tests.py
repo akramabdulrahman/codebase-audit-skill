@@ -83,7 +83,7 @@ for name in ("guards", "mongoose-schema", "db-layer"):
 
 # ---- optional: ICS real-repo invariant (the 3 live-verified IDORs stay HIGH) ----
 if os.path.isdir(ICS) and os.path.exists(os.path.join(ICS, ".audit", "stack.json")):
-    print("[5] ICS invariant (live-verified IDORs)")
+    print("[5] ICS invariant (IDOR candidates flagged HIGH — STATIC; live reproduction is Stage 4, run separately)")
     ie = {**os.environ, "AUDIT_CONFIG": os.path.join(ICS, ".audit", "stack.json")}
     am2 = json.loads(run(["python3", f"{PROBES}/actor-model.py", os.path.join(ICS, "server"), os.path.join(ICS, "client"), "--json"], e=ie).stdout or "{}")
     high = {c["path"] for c in am2.get("candidates", []) if c["tier"] == "HIGH"}
@@ -106,6 +106,10 @@ if os.path.isdir(ICS) and os.path.exists(os.path.join(ICS, ".audit", "stack.json
         for term in re.findall(r"(\w+)\.(\w+)\s*==", c.get("predicate") or ""):
             if not field_declared(*term): unsound.append(f"{c['method']} {c['path']}: {term[0]}.{term[1]}")
     check("ICS: no candidate names a field its model doesn't declare (predicate soundness)", not unsound, str(unsound[:3]))
+    # entity soundness: a /sessions/:id route must be scoped to `sessions`, not a written User (the db-layer 2-hop + route-aware fix)
+    att = next((c for c in am2.get("candidates", []) if "attendeesList" in c["path"]), None)
+    check("ICS: attendeesList predicate is session-scoped, not users.* (route-aware entity)",
+          att is None or (att.get("predicate") or "").startswith("sessions."), str(att and att.get("predicate")))
 
 print(f"\n{'='*50}\n{passed} passed, {len(failed)} failed" + (": " + ", ".join(failed) if failed else ""))
 sys.exit(1 if failed else 0)

@@ -50,20 +50,38 @@ function controllerRoleGate(absFile) {
   if (absFile in gateCache) return gateCache[absFile];
   let ast; try { ast = parse(absFile); } catch (_) { return (gateCache[absFile] = { gated: false, roles: [] }); }
   const roles = new Set(); let gated = false;
-  // resolve `const currentUser = req.user` aliases so `currentUser.role === X` is seen (guards.js does this too)
+  // resolve user aliases: `const currentUser = req.user` AND `const { user } = req` (gwent's dominant idiom)
   const aliases = new Set();
   traverse(ast, {
     VariableDeclarator(p) {
-      const init = p.node.init;
-      if (p.node.id.type === "Identifier" && init && init.type === "MemberExpression" &&
-          UROOT_PROP && init.object && init.object.name === UROOT_OBJ && init.property && init.property.name === UROOT_PROP) aliases.add(p.node.id.name);
+      const init = p.node.init, id = p.node.id;
+      // const currentUser = req.user
+      if (id.type === "Identifier" && init && init.type === "MemberExpression" &&
+          UROOT_PROP && init.object && init.object.name === UROOT_OBJ && init.property && init.property.name === UROOT_PROP) aliases.add(id.name);
+      // const { user } = req   ->  the local bound to the UROOT_PROP key aliases req.user
+      if (id.type === "ObjectPattern" && init && init.type === "Identifier" && init.name === UROOT_OBJ && UROOT_PROP)
+        for (const pr of id.properties) if (pr.key && pr.key.name === UROOT_PROP && pr.value && pr.value.name) aliases.add(pr.value.name);
     },
   });
   const isRoleExpr = (n) => isRoleExprA(n, aliases);
+  // a role check only GATES if it forbids/returns on failure — not a behaviour branch (else if (role===trainer){push})
+  const src = fs.readFileSync(absFile, "utf8");
+  const FORBID = /forbidden|unauthorized|forbid|denied|access denied/i;
+  const gatesForbid = (p) => {
+    let cur = p;
+    for (let i = 0; i < 6 && cur; i++) {
+      const ifp = cur.findParent((x) => x.isIfStatement());
+      if (!ifp) break;
+      for (const b of [ifp.node.consequent, ifp.node.alternate])
+        if (b) { const s = src.slice(b.start, b.end); if (FORBID.test(s) && /\b(return|throw|next)\b/.test(s)) return true; }
+      cur = ifp;
+    }
+    return false;
+  };
   traverse(ast, {
     BinaryExpression(p) {
       if (!/^[=!]==?$/.test(p.node.operator)) return;
-      if (isRoleExpr(p.node.left) || isRoleExpr(p.node.right)) {
+      if ((isRoleExpr(p.node.left) || isRoleExpr(p.node.right)) && gatesForbid(p)) {
         gated = true;
         const other = isRoleExpr(p.node.left) ? p.node.right : p.node.left;
         const v = roleVal(other); if (v) roles.add(v);
@@ -71,7 +89,7 @@ function controllerRoleGate(absFile) {
     },
     CallExpression(p) {   // [roleA, roleB].includes(user.role)
       const c = p.node.callee;
-      if (c && c.type === "MemberExpression" && c.property.name === "includes" && p.node.arguments[0] && isRoleExpr(p.node.arguments[0])) {
+      if (c && c.type === "MemberExpression" && c.property.name === "includes" && p.node.arguments[0] && isRoleExpr(p.node.arguments[0]) && gatesForbid(p)) {
         gated = true;
         if (c.object.type === "ArrayExpression") c.object.elements.forEach((e) => { const v = roleVal(e); if (v) roles.add(v); });
       }

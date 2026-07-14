@@ -29,61 +29,65 @@ function listFiles(dir) {
   }
   return out;
 }
-// Model.op(...)  -> capture model + op inside an arbitrary subtree
-function dbOpsIn(node, modelNames) {
-  const ops = [];
+// capture a subtree's DIRECT Model.op(...) db ops + the plain-identifier functions it CALLS (for transitive inlining)
+function dbOpsAndCalls(node, modelNames) {
+  const ops = [], calls = new Set();
   traverse(node, {
     noScope: true,
     CallExpression(p) {
       let c = p.node.callee;
-      // unwrap chained .then()/.lean()/.exec()/.populate() to reach Model.op
       while (c && c.type === "MemberExpression" && /^(then|lean|exec|sort|limit|skip|select|populate)$/i.test(c.property.name || "") && c.object.type === "CallExpression")
         c = c.object.callee;
       if (c && c.type === "MemberExpression" && c.property && isOp(c.property.name || "")) {
-        // Model is the base identifier of the member chain
-        let base = c.object;
-        while (base && base.type === "MemberExpression") base = base.object;
+        let base = c.object; while (base && base.type === "MemberExpression") base = base.object;
         const model = base && base.type === "Identifier" ? base.name : null;
-        if (model && (/^[A-Z]/.test(model) || (modelNames && modelNames.has(model)))) {
-          const op = c.property.name;
-          ops.push({ model, op, write: WRITE.has(op.toLowerCase()), line: p.node.loc ? p.node.loc.start.line : 0 });
-        }
+        if (model && (/^[A-Z]/.test(model) || (modelNames && modelNames.has(model))))
+          ops.push({ model, op: c.property.name, write: WRITE.has(c.property.name.toLowerCase()), line: p.node.loc ? p.node.loc.start.line : 0 });
       }
+      if (p.node.callee.type === "Identifier") calls.add(p.node.callee.name);   // a local-fn call (resolved below)
     },
   }, {});
-  const m = new Map(); for (const o of ops) m.set(o.model + "." + o.op, o);
-  return [...m.values()];
+  return { ops, calls };
 }
 
-// ---- pass 1: query fns -> db ops ----
-const queries = {};   // fnName -> [{model,op,write}]
+// ---- pass 1: query fns -> db ops (resolves `module.exports.x = localConst` and inlines local-fn calls) ----
+const queries = {};   // fnName -> [{model,op,write,loc}]
 const qFiles = QUERY_DIRS.flatMap((d) => listFiles(path.join(serverDir, d)));
 const modelNames = new Set();
 for (const f of listFiles(path.join(serverDir, MODEL_DIR))) modelNames.add(path.basename(f, ".js"));
 for (const f of qFiles) {
   let ast; try { ast = parse(f); } catch (_) { continue; }
   const rel = path.relative(serverDir, f);
-  const stamp = (ops) => (ops.forEach((o) => { o.loc = rel + ":" + (o.line || 0); delete o.line; }), ops);
+  // local function definitions in this file (so `module.exports.x = updateAttendeesList` resolves to the fn body)
+  const localFns = {};
   traverse(ast, {
-    // module.exports.NAME = <fn>
-    AssignmentExpression(p) {
+    VariableDeclarator(p) { if (p.node.id.type === "Identifier" && p.node.init && /^(ArrowFunctionExpression|FunctionExpression)$/.test(p.node.init.type)) localFns[p.node.id.name] = p.node.init; },
+    FunctionDeclaration(p) { if (p.node.id) localFns[p.node.id.name] = p.node; },
+  });
+  // ops of a fn + transitively the ops of any LOCAL fn it calls (cycle-guarded, within the file)
+  function resolveOps(fnNode, seen) {
+    const { ops, calls } = dbOpsAndCalls(fnNode, modelNames);
+    const all = [...ops];
+    for (const cn of calls) if (localFns[cn] && !seen.has(cn)) { seen.add(cn); all.push(...resolveOps(localFns[cn], seen)); }
+    return all;
+  }
+  const stamp = (ops) => { const m = new Map(); for (const o of ops) m.set(o.model + "." + o.op, o); return [...m.values()].map((o) => ({ model: o.model, op: o.op, write: o.write, loc: rel + ":" + (o.line || 0) })); };
+  const exportFn = (name, valNode) => {
+    const fnNode = valNode.type === "Identifier" && localFns[valNode.name] ? localFns[valNode.name] : valNode;   // resolve var-ref exports
+    const ops = resolveOps(fnNode, new Set());
+    if (ops.length) queries[name] = stamp(ops);
+  };
+  traverse(ast, {
+    AssignmentExpression(p) {   // module.exports.NAME = <fn | localIdent>
       const l = p.node.left;
       if (l.type === "MemberExpression" && l.object.type === "MemberExpression" &&
-          l.object.object.name === "module" && l.object.property.name === "exports" && l.property.name) {
-        const ops = dbOpsIn(p.node.right, modelNames);
-        if (ops.length) queries[l.property.name] = stamp(ops);
-      }
+          l.object.object.name === "module" && l.object.property.name === "exports" && l.property.name) exportFn(l.property.name, p.node.right);
     },
-    // module.exports = { NAME: fn, ... }
-    ExpressionStatement(p) {
+    ExpressionStatement(p) {   // module.exports = { NAME: fn|localIdent, ... }
       const e = p.node.expression;
       if (e && e.type === "AssignmentExpression" && e.left.type === "MemberExpression" &&
-          e.left.object.name === "module" && e.left.property.name === "exports" && e.right.type === "ObjectExpression") {
-        for (const pr of e.right.properties) if (pr.key && pr.value) {
-          const ops = dbOpsIn(pr.value, modelNames);
-          if (ops.length) queries[pr.key.name] = stamp(ops);
-        }
-      }
+          e.left.object.name === "module" && e.left.property.name === "exports" && e.right.type === "ObjectExpression")
+        for (const pr of e.right.properties) if (pr.key && pr.value) exportFn(pr.key.name, pr.value);
     },
   });
 }
